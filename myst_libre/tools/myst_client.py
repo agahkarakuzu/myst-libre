@@ -68,9 +68,9 @@ class MystMD(AbstractClass):
         except subprocess.CalledProcessError as e:
             self.print_error(f"Error checking Node.js version: {e.stderr.strip()}")
             raise
-        except Exception as e:
-            self.print_error(f"Unexpected error occurred: {str(e)}")
-            raise
+        except (FileNotFoundError, OSError) as e:
+            self.print_error(f"Node.js executable not found: {str(e)}")
+            raise EnvironmentError("Node.js is not installed or not found in PATH") from e
 
     def _check_mystmd_installed(self):
         """
@@ -99,9 +99,9 @@ class MystMD(AbstractClass):
         except subprocess.CalledProcessError as e:
             self.print_error(f"Error checking myst version: {e.stderr.strip()}")
             raise
-        except Exception as e:
-            self.print_error(f"Unexpected error occurred: {str(e)}")
-            raise
+        except (FileNotFoundError, OSError) as e:
+            self.print_error(f"MyST CLI executable not found: {str(e)}")
+            raise EnvironmentError("MyST CLI is not installed or not found in PATH") from e
 
     def run_command(
         self,
@@ -169,8 +169,8 @@ class MystMD(AbstractClass):
             self.logger.error(f"Command output: {e.output}")
             self.logger.error(f"Error output: {e.stderr}")
             return "Error", e.stderr or ""
-        except Exception as e:
-            self.logger.error(f"Unexpected error: {e}")
+        except (OSError, PermissionError, FileNotFoundError) as e:
+            self.logger.error(f"System error running myst command: {e}")
             return "Error", str(e)
 
     def _stream_output(self, stream, color: str) -> str:

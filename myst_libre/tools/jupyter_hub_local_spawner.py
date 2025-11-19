@@ -11,6 +11,8 @@ from hashlib import blake2b
 from typing import Optional, List, Dict, TYPE_CHECKING
 from pathlib import Path
 
+import docker.errors
+
 from ..abstract_class import AbstractClass
 from ..models import ContainerConfig
 from ..exceptions import ContainerError, PortAllocationError
@@ -158,17 +160,35 @@ class JupyterHubLocalSpawner(AbstractClass):
     def cleanup(self):
         """
         Clean up all resources (container, etc.).
+
+        Ensures complete cleanup of Docker containers and network resources.
+        Verifies cleanup succeeded before clearing references.
         """
         if self.container:
+            container_id = self.container.short_id
             try:
-                self.logger.info(f"Cleaning up container {self.container.short_id}")
+                self.logger.info(f"Cleaning up container {container_id}")
                 self.container.stop(timeout=DEFAULT_CONTAINER_STOP_TIMEOUT)
                 self.container.remove(force=True)
-                self.logger.info("Container cleaned up successfully")
-            except Exception as e:
+
+                # Verify container is actually removed
+                try:
+                    self.container.reload()
+                    # If we get here, container still exists
+                    self.logger.warning(f"Container {container_id} still exists after removal attempt")
+                except docker.errors.NotFound:
+                    # Container successfully removed
+                    self.logger.info(f"Container {container_id} successfully removed")
+
+            except (docker.errors.APIError, docker.errors.DockerException) as e:
                 self.logger.error(f"Error during container cleanup: {e}")
             finally:
+                # Always clear reference to avoid leaking memory
                 self.container = None
+                # Clear port to allow reuse
+                if self.port:
+                    self.logger.debug(f"Released port {self.port}")
+                    self.port = None
 
         self._cleanup_needed = False
 
@@ -218,7 +238,7 @@ class JupyterHubLocalSpawner(AbstractClass):
             # Log status information
             output_logs.extend(self._log_spawn_status())
 
-        except Exception as e:
+        except (docker.errors.APIError, docker.errors.DockerException, OSError, ValueError, AttributeError) as e:
             logging.error(f"Could not spawn JupyterHub: {e}")
             output_logs.append(f"Error: {e}")
             self.cleanup()

@@ -61,7 +61,7 @@ class CurvenoteBuilder(AbstractClass):
         super().__init__()
         self.curvenote_client = Curvenote(self.build_dir, self.env_vars, dotenvloc=dotenvloc)
 
-    def setenv(self, key: str, value: str):
+    def set_env(self, key: str, value: str):
         """
         Set an environment variable for Curvenote operations.
 
@@ -70,6 +70,12 @@ class CurvenoteBuilder(AbstractClass):
             value: Environment variable value
         """
         self.env_vars[key] = value
+
+    # Deprecated alias for backward compatibility
+    def setenv(self, key: str, value: str):
+        """Deprecated: Use set_env instead."""
+        self.logger.warning("setenv is deprecated, use set_env instead")
+        return self.set_env(key, value)
 
     def build(
         self,

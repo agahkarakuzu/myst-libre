@@ -17,6 +17,7 @@ from docker.models.images import Image
 from ..abstract_class import AbstractClass
 from ..models import REESConfig, CommitInfo
 from ..exceptions import DockerError, ConfigurationError
+from ..utils.retry import retry_github_api
 from ..tools.docker_registry_client import DockerRegistryClient
 from ..tools.build_source_manager import BuildSourceManager
 
@@ -88,9 +89,12 @@ class REES(AbstractClass):
                 "Docker is not installed or not found in PATH. Please install Docker to proceed."
             ) from e
 
+    @retry_github_api
     def _resolve_commit_hash(self):
         """
         Resolve 'latest' commit hash to actual SHA from GitHub API.
+
+        Retries on network failures with exponential backoff.
         """
         if self.config.gh_repo_commit_hash == "latest":
             self.cprint("🔎 Searching for latest commit hash in GitHub", "light_blue")

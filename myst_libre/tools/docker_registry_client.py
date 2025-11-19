@@ -14,6 +14,7 @@ from ..abstract_class import AbstractClass
 from ..models import REESConfig
 from ..exceptions import DockerRegistryError, ImageNotFoundError
 from ..utils import BinderHubNaming
+from ..utils.retry import retry_github_api
 from ..constants import MYST_CONFIG_FILE
 from .rest_client import RestClient
 from .decorators import request_set_decorator
@@ -150,9 +151,12 @@ class DockerRegistryClient(AbstractClass):
         # 4. Fallback to GitHub repo name
         return self.config.gh_user_repo_name
 
+    @retry_github_api
     def _load_myst_config(self) -> bool:
         """
         Load and parse myst.yml from GitHub repository.
+
+        Retries on network failures with exponential backoff.
 
         Returns:
             True if loaded successfully, False otherwise
@@ -174,8 +178,8 @@ class DockerRegistryClient(AbstractClass):
         except yaml.YAMLError as e:
             self.logger.error(f"Error parsing YAML: {e}")
             return False
-        except Exception as e:
-            self.logger.error(f"Error loading myst config: {e}")
+        except (OSError, IOError) as e:
+            self.logger.error(f"Error reading myst config file: {e}")
             return False
 
     def _extract_repo_from_myst_config(self) -> Optional[str]:
@@ -262,8 +266,8 @@ class DockerRegistryClient(AbstractClass):
                 created_dt = self._get_tag_creation_date(tag)
                 if created_dt:
                     tag_dates.append((tag, created_dt))
-            except Exception as e:
-                self.logger.warning(f"Failed to get creation date for tag {tag}: {e}")
+            except (KeyError, ValueError, AttributeError) as e:
+                self.logger.warning(f"Failed to parse creation date for tag {tag}: {e}")
                 continue
 
         if not tag_dates:

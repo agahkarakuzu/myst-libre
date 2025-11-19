@@ -135,8 +135,8 @@ class BuildSourceManager(AbstractClass):
 
         except GitCommandError as e:
             raise GitOperationError(f"Failed to clone repository: {e}") from e
-        except Exception as e:
-            raise GitOperationError(f"Unexpected error during clone: {e}") from e
+        except (OSError, PermissionError, ValueError) as e:
+            raise GitOperationError(f"System error during clone: {e}") from e
 
     def git_checkout_commit(self) -> bool:
         """
@@ -177,8 +177,8 @@ class BuildSourceManager(AbstractClass):
         except GitCommandError as e:
             self.print_error(f"Failed to checkout {self.config.gh_repo_commit_hash}: {e}")
             raise GitOperationError(f"Checkout failed: {e}") from e
-        except Exception as e:
-            raise GitOperationError(f"Unexpected error during checkout: {e}") from e
+        except (OSError, PermissionError, ValueError) as e:
+            raise GitOperationError(f"System error during checkout: {e}") from e
 
     def _configure_git_exclude(self):
         """Configure git exclude patterns to preserve cache and data directories."""
@@ -202,7 +202,7 @@ class BuildSourceManager(AbstractClass):
                 exclude_content = git_exclude_path.read_text()
             else:
                 exclude_content = ''
-        except Exception as e:
+        except (OSError, PermissionError, IOError) as e:
             self.logger.warning(f"Error reading git exclude file: {e}")
             exclude_content = ''
 
@@ -216,7 +216,7 @@ class BuildSourceManager(AbstractClass):
                         f.write('\n')
                     f.write('\n'.join(patterns_added) + '\n')
                 self.cprint(f"Added {', '.join(patterns_added)} to git exclude", "cyan")
-            except Exception as e:
+            except (OSError, PermissionError, IOError) as e:
                 self.logger.warning(f"Failed to update git exclude: {e}")
 
     def _clean_working_directory(self):
@@ -297,7 +297,7 @@ class BuildSourceManager(AbstractClass):
             repo2data = Repo2Data(str(data_req_path), server=True)
             repo2data.set_server_dst_folder(str(target_directory))
             repo2data.install()
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, ImportError) as e:
             self.logger.error(f"repo2data download failed: {e}")
             raise
 
@@ -332,7 +332,7 @@ class BuildSourceManager(AbstractClass):
                     hash=self.config.binder_image_tag
                 )
 
-        except Exception as e:
+        except (AttributeError, ValueError, TypeError) as e:
             self.logger.warning(f"Failed to set commit info: {e}")
 
     def read_latest_successful_hash(self) -> Optional[str]:
@@ -357,7 +357,7 @@ class BuildSourceManager(AbstractClass):
                 commit_hash = latest_txt_path.read_text().strip()
                 self.logger.info(f"Last successful build: {commit_hash}")
                 return commit_hash
-            except Exception as e:
+            except (OSError, PermissionError, IOError) as e:
                 self.logger.warning(f"Error reading {LATEST_BUILD_MARKER}: {e}")
                 return None
         return None
@@ -409,7 +409,7 @@ class BuildSourceManager(AbstractClass):
             self.cprint(f"✓ Build preserved at {commit_dir}", "white", "on_green")
             return True
 
-        except Exception as e:
+        except (OSError, PermissionError, shutil.Error) as e:
             self.print_error(f"Failed to preserve build: {e}")
             raise GitOperationError(f"Failed to save build: {e}") from e
 
@@ -435,7 +435,7 @@ class BuildSourceManager(AbstractClass):
                 self.logger.info("Build cache cleared successfully")
                 self.print_success("Build cache cleared")
                 return True
-            except Exception as e:
+            except (OSError, PermissionError, shutil.Error) as e:
                 self.print_error(f"Failed to clear cache: {e}")
                 return False
         else:

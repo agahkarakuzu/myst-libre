@@ -44,5 +44,5 @@ BINDERHUB_CHAR_ENCODING = {
 }
 
 # Commit Info Defaults (for overridden images)
-DEFAULT_OVERRIDE_IMAGE_DATE = "20 November 2024"
+DEFAULT_OVERRIDE_IMAGE_DATE = "2024-11-20"  # ISO format for datetime.fromisoformat()
 DEFAULT_OVERRIDE_IMAGE_MESSAGE = "Base runtime from myst-libre"
