@@ -8,13 +8,16 @@ import os
 import logging
 import socket
 from hashlib import blake2b
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, TYPE_CHECKING
 from pathlib import Path
 
 from ..abstract_class import AbstractClass
-from ..rees import REES
 from ..models import ContainerConfig
 from ..exceptions import ContainerError, PortAllocationError
+
+# Use TYPE_CHECKING to avoid circular import
+if TYPE_CHECKING:
+    from ..rees import REES
 from ..constants import (
     DEFAULT_PORT_RANGE,
     DEFAULT_CONTAINER_STOP_TIMEOUT,
@@ -31,7 +34,7 @@ class JupyterHubLocalSpawner(AbstractClass):
     Provides port allocation, volume mounting, and container lifecycle management.
     """
 
-    def __init__(self, rees: REES, **kwargs):
+    def __init__(self, rees: 'REES', **kwargs):
         """
         Initialize JupyterHub spawner.
 
@@ -49,6 +52,9 @@ class JupyterHubLocalSpawner(AbstractClass):
             TypeError: If rees is not a REES instance
             ValueError: If required kwargs are missing
         """
+        # Import here to avoid circular import at module load time
+        from ..rees import REES
+
         if not isinstance(rees, REES):
             raise TypeError(f"Expected 'rees' to be an instance of REES, got {type(rees).__name__}")
 

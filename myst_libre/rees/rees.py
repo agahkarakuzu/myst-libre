@@ -17,8 +17,8 @@ from docker.models.images import Image
 from ..abstract_class import AbstractClass
 from ..models import REESConfig, CommitInfo
 from ..exceptions import DockerError, ConfigurationError
-from ..tools.docker_registry_client_new import DockerRegistryClient
-from ..tools.build_source_manager_new import BuildSourceManager
+from ..tools.docker_registry_client import DockerRegistryClient
+from ..tools.build_source_manager import BuildSourceManager
 
 
 class REES(AbstractClass):
