@@ -1,75 +1,144 @@
 """
 jupyter_hub_local_spawner.py
 
-This module contains the JupyterHubLocalSpawner class for managing JupyterHub instances locally.
+Refactored JupyterHubLocalSpawner for managing containerized JupyterHub instances.
 """
 
 import os
 import logging
 import socket
 from hashlib import blake2b
-from myst_libre.abstract_class import AbstractClass
-from myst_libre.rees import REES
+from typing import Optional, List, Dict
+from pathlib import Path
+
+from ..abstract_class import AbstractClass
+from ..rees import REES
+from ..models import ContainerConfig
+from ..exceptions import ContainerError, PortAllocationError
+from ..constants import (
+    DEFAULT_PORT_RANGE,
+    DEFAULT_CONTAINER_STOP_TIMEOUT,
+    TOKEN_DIGEST_SIZE,
+    DATA_DIR,
+)
+
 
 class JupyterHubLocalSpawner(AbstractClass):
     """
-    Spawner for managing JupyterHub instances locally.
-    
-    This class implements context manager protocol for proper resource cleanup.
-    
-    Args:
-        registry_url (str): URL of the Docker registry (https://my-registry.example.com).
-        gh_user_repo_name (str): GitHub user/repository name.
-        auth (dict): Authentication credentials {username:"***","password":"***"}.
-        binder_image_tag (str): Docker image tag of the container in which the article will be built.
-        build_src_commit_hash (str): Commit hash of the repository from which the article will be built.
+    Spawner for managing JupyterHub instances in Docker containers.
+
+    Implements context manager protocol for proper resource cleanup.
+    Provides port allocation, volume mounting, and container lifecycle management.
     """
-    def __init__(self,rees,**kwargs):
+
+    def __init__(self, rees: REES, **kwargs):
+        """
+        Initialize JupyterHub spawner.
+
+        Args:
+            rees: REES instance with Docker and source management
+            **kwargs: Container configuration parameters
+
+        Required kwargs:
+            - container_data_mount_dir: Mount point in container for data
+            - container_build_source_mount_dir: Mount point in container for build sources
+            - host_data_parent_dir: Parent directory on host for data
+            - host_build_source_parent_dir: Parent directory on host for build sources
+
+        Raises:
+            TypeError: If rees is not a REES instance
+            ValueError: If required kwargs are missing
+        """
         if not isinstance(rees, REES):
-            raise TypeError(f"Expected 'rees' to be an instance of REES, got {type(rees).__name__} instead")
+            raise TypeError(f"Expected 'rees' to be an instance of REES, got {type(rees).__name__}")
+
         super().__init__()
         self.rees = rees
-        required_inputs = ['container_data_mount_dir','container_build_source_mount_dir',
-                           'host_data_parent_dir','host_build_source_parent_dir']
+
+        # Validate and set required inputs
+        self._validate_and_set_config(kwargs)
+
+        # Container state
+        self.container: Optional = None
+        self.port: Optional[int] = None
+        self.jh_token: Optional[str] = None
+        self.jh_url: Optional[str] = None
+        self._cleanup_needed: bool = False
+
+    def _validate_and_set_config(self, kwargs: Dict):
+        """
+        Validate and set container configuration.
+
+        Args:
+            kwargs: Configuration parameters
+
+        Raises:
+            ValueError: If required parameters are missing
+        """
+        required_inputs = [
+            'container_data_mount_dir',
+            'container_build_source_mount_dir',
+            'host_data_parent_dir',
+            'host_build_source_parent_dir'
+        ]
 
         for inp in required_inputs:
-            if inp not in kwargs.keys():
-                raise(f'{inp} is not provided for JupyterHubLocalSpawner.')
-            else:
-                setattr(self, inp, kwargs[inp])
+            if inp not in kwargs:
+                raise ValueError(f"Required parameter '{inp}' not provided for JupyterHubLocalSpawner")
+            setattr(self, inp, kwargs[inp])
 
-        self.container = None
-        self.port = None
-        self.jh_token = None
-        self._cleanup_needed = False
+        # Create ContainerConfig for structured access
+        self.container_config = ContainerConfig(
+            host_build_source_parent_dir=self.host_build_source_parent_dir,
+            container_build_source_mount_dir=self.container_build_source_mount_dir,
+            host_data_parent_dir=self.host_data_parent_dir,
+            container_data_mount_dir=self.container_data_mount_dir,
+            port_range=kwargs.get('port_range', DEFAULT_PORT_RANGE)
+        )
 
-    def find_open_port(self):
+    def find_open_port(self) -> int:
         """
-        Find an open port to use.
-        
+        Find an open port within the configured port range.
+
         Returns:
-            int: Available port number.
-        
+            Available port number
+
         Raises:
-            Exception: If no open ports are available.
+            PortAllocationError: If no open ports are available
         """
-        for port in range(8888, 10000):
+        min_port, max_port = self.container_config.port_range
+
+        for port in range(min_port, max_port + 1):
             if not self._is_port_in_use(port):
                 return port
-        raise Exception("No open ports available")
 
-    def _is_port_in_use(self, port):
+        raise PortAllocationError(
+            f"No open ports available in range {min_port}-{max_port}"
+        )
+
+    def _is_port_in_use(self, port: int) -> bool:
         """
         Check if a port is in use.
-        
+
         Args:
-            port (int): Port number to check.
-        
+            port: Port number to check
+
         Returns:
-            bool: True if port is in use, else False.
+            True if port is in use, False otherwise
         """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('127.0.0.1', port)) == 0
+
+    def _generate_token(self) -> str:
+        """
+        Generate a secure random token for JupyterHub.
+
+        Returns:
+            Hex-encoded token
+        """
+        h = blake2b(digest_size=TOKEN_DIGEST_SIZE)
+        h.update(os.urandom(TOKEN_DIGEST_SIZE))
+        return h.hexdigest()
 
     def __enter__(self):
         """Context manager entry point."""
@@ -87,143 +156,274 @@ class JupyterHubLocalSpawner(AbstractClass):
         if self.container:
             try:
                 self.logger.info(f"Cleaning up container {self.container.short_id}")
-                self.container.stop(timeout=10)
+                self.container.stop(timeout=DEFAULT_CONTAINER_STOP_TIMEOUT)
                 self.container.remove(force=True)
                 self.logger.info("Container cleaned up successfully")
             except Exception as e:
                 self.logger.error(f"Error during container cleanup: {e}")
             finally:
                 self.container = None
-        
+
         self._cleanup_needed = False
 
-    def spawn_jupyter_hub(self, jb_build_command=None):
+    def spawn_jupyter_hub(self, jb_build_command: Optional[bool] = None) -> List[str]:
         """
-        Spawn a JupyterHub instance.
-        """
-        output_logs = []  # Collect logs and cprints here
-        self.port = self.find_open_port()
-        h = blake2b(digest_size=20)
-        h.update(os.urandom(20))
-        self.jh_token = h.hexdigest()
+        Spawn a JupyterHub instance in a Docker container.
 
+        Args:
+            jb_build_command: If True, run jupyter-book build instead of server
+
+        Returns:
+            List of log messages
+
+        Raises:
+            ContainerError: If container spawn fails
+        """
+        output_logs = []
+
+        try:
+            # Allocate port and generate token
+            self.port = self.find_open_port()
+            self.jh_token = self._generate_token()
+            self.jh_url = f"http://localhost:{self.port}"
+
+            # Determine entrypoint
+            entrypoint = self._build_entrypoint(jb_build_command)
+
+            # Prepare repository
+            self._prepare_repository()
+
+            # Pre-create data directory to avoid permission issues
+            self._prepare_data_directory()
+
+            # Download data if needed
+            if self.rees.dataset_name:
+                self.rees.repo2data_download(self.host_data_parent_dir)
+
+            # Build volume mounts
+            volumes = self._build_volume_mounts()
+
+            # Pull image
+            self.rees.pull_image()
+
+            # Spawn container
+            self._spawn_container(entrypoint, volumes)
+
+            # Log status information
+            output_logs.extend(self._log_spawn_status())
+
+        except Exception as e:
+            logging.error(f"Could not spawn JupyterHub: {e}")
+            output_logs.append(f"Error: {e}")
+            self.cleanup()
+            raise ContainerError(f"Failed to spawn JupyterHub: {e}") from e
+
+        return output_logs
+
+    def _build_entrypoint(self, jb_build_command: Optional[bool] = None) -> str:
+        """
+        Build the container entrypoint command.
+
+        Args:
+            jb_build_command: If True, use jupyter-book build command
+
+        Returns:
+            Entrypoint command string
+        """
         if jb_build_command:
-            this_entrypoint = f"/bin/sh -c 'jupyter-book build --all --verbose --path-output {self.container_build_source_mount_dir} content 2>&1 | tee -a jupyter_book_build.log'"
+            return (
+                f"/bin/sh -c 'jupyter-book build --all --verbose "
+                f"--path-output {self.container_build_source_mount_dir} content "
+                f"2>&1 | tee -a jupyter_book_build.log'"
+            )
         else:
-            this_entrypoint = f'jupyter server --allow-root --ip 0.0.0.0 --log-level=DEBUG --IdentityProvider.token="{self.jh_token}" --ServerApp.port="{self.port}"'
-        
-        # self.rees.found_image_name is assigned if above not fails
+            return (
+                f'jupyter server --allow-root --ip 0.0.0.0 --log-level=DEBUG '
+                f'--IdentityProvider.token="{self.jh_token}" '
+                f'--ServerApp.port="{self.port}"'
+            )
 
+    def _prepare_repository(self):
+        """Clone and checkout repository."""
         self.rees.git_clone_repo(self.host_build_source_parent_dir)
         self.rees.git_checkout_commit()
+
         if not self.rees.dataset_name:
             self.rees.get_project_name()
 
-        # Pre-create the data directory in the build directory AFTER checkout to prevent Docker
-        # from creating it as root when mounting volumes. This must be done after checkout
-        # to avoid interfering with git operations.
-        # Since self.rees.build_dir maps to /home/jovyan and data will be mounted
-        # at /home/jovyan/data, we need to create 'data' subdirectory here
-        data_dir_in_build = os.path.join(self.rees.build_dir, 'data')
-        os.makedirs(data_dir_in_build, exist_ok=True)
+    def _prepare_data_directory(self):
+        """
+        Pre-create data directory to prevent Docker from creating it as root.
+
+        This must be done after checkout to avoid interfering with git operations.
+        """
+        if not self.rees.build_dir:
+            return
+
+        data_dir_in_build = self.rees.build_dir / DATA_DIR
+        data_dir_in_build.mkdir(exist_ok=True)
         logging.debug(f"Pre-created data directory: {data_dir_in_build}")
 
-        if self.rees.dataset_name:
-            self.rees.repo2data_download(self.host_data_parent_dir)
+    def _build_volume_mounts(self) -> Dict[str, Dict]:
+        """
+        Build volume mount configuration.
 
-            mnt_vol = {f'{os.path.join(self.host_data_parent_dir, self.rees.dataset_name)}': {'bind': os.path.join(self.container_data_mount_dir, self.rees.dataset_name), 'mode': 'ro'},
-                        self.rees.build_dir: {'bind': f'{self.container_build_source_mount_dir}', 'mode': 'rw'}}
-        else:
-            mnt_vol = {self.rees.build_dir: {'bind': f'{self.container_build_source_mount_dir}', 'mode': 'rw'}}
-            
-        self.rees.pull_image()
-        self.jh_url = f"http://localhost:{self.port}"
+        Returns:
+            Dictionary of volume mounts
+        """
+        volumes = {
+            str(self.rees.build_dir): {
+                'bind': self.container_build_source_mount_dir,
+                'mode': 'rw'
+            }
+        }
+
+        # Add data volume if dataset exists
+        if self.rees.dataset_name:
+            host_data_path = Path(self.host_data_parent_dir) / self.rees.dataset_name
+            container_data_path = f"{self.container_data_mount_dir}/{self.rees.dataset_name}"
+
+            volumes[str(host_data_path)] = {
+                'bind': container_data_path,
+                'mode': 'ro'
+            }
+
+        return volumes
+
+    def _spawn_container(self, entrypoint: str, volumes: Dict[str, Dict]):
+        """
+        Spawn the Docker container.
+
+        Args:
+            entrypoint: Container entrypoint command
+            volumes: Volume mount configuration
+
+        Raises:
+            ContainerError: If container spawn fails
+        """
         try:
-            # Run the container as the current host user (UID:GID) so files
-            # created inside bind-mounted volumes are owned by the host user.
-            # This avoids leaving root-owned files on the host that the user
-            # cannot delete after the container stops.
+            # Run as current host user to avoid permission issues
             run_user = f"{os.getuid()}:{os.getgid()}"
             logging.debug(f"Running container as user {run_user}")
+
             self.container = self.rees.docker_client.containers.run(
                 self.rees.docker_image,
                 ports={f'{self.port}/tcp': self.port},
-                environment={"JUPYTER_TOKEN": f'{self.jh_token}', "port": f'{self.port}', "JUPYTER_BASE_URL": f'{self.jh_url}'},
-                entrypoint=this_entrypoint,
-                volumes=mnt_vol,
+                environment={
+                    "JUPYTER_TOKEN": self.jh_token,
+                    "port": str(self.port),
+                    "JUPYTER_BASE_URL": self.jh_url
+                },
+                entrypoint=entrypoint,
+                volumes=volumes,
                 user=run_user,
-                detach=True)
+                detach=True
+            )
+
             self._cleanup_needed = True
-            logging.info(f'Jupyter hub is {self.container.status}')
+            logging.info(f"Jupyter hub is {self.container.status}")
 
-            # Use the helper function to log and print messages
-            def log_and_print(message, color=None):
-                output_logs.append(f"\n {message}")
-                if color:
-                    self.cprint(message, color)
-                else:
-                    print(message)
-
-            # Collecting and printing output
-            log_and_print('␤[Status]', 'light_grey')
-            log_and_print(' ├─────── ⏺ running', 'green')
-            log_and_print(f' └─────── Container {self.container.short_id} {self.container.name}', 'green')
-            log_and_print(' ℹ Run the following commands in the terminal if you are debugging locally:', 'yellow')
-            log_and_print(f' port="{self.port}"', 'cyan')
-            log_and_print(f' export JUPYTER_BASE_URL="{self.jh_url}"', 'cyan')
-            log_and_print(f' export JUPYTER_TOKEN="{self.jh_token}"', 'cyan')
-            log_and_print('␤[Resources]', 'light_grey')
-            log_and_print(' ├── MyST repository', 'magenta')
-            log_and_print(f' │   ├───────── ✸ {self.rees.gh_user_repo_name}', 'light_blue')
-            log_and_print(f' │   ├───────── ⎌ {self.rees.gh_repo_commit_hash}', 'light_blue')
-            log_and_print(f" │   └───────── ⏲ {self.rees.repo_commit_info['datetime']}: {self.rees.repo_commit_info['message']}".replace('\n', ''), 'light_blue')
-            log_and_print(' └── Docker container', 'magenta')
-            log_and_print(f'     ├───────── ✸ {self.rees.pull_image_name}', 'light_blue')
-            log_and_print(f'     ├───────── ⎌ {self.rees.binder_image_tag}', 'light_blue')
-            log_and_print(f"     ├───────── ⏲ {self.rees.binder_commit_info['datetime']}: {self.rees.binder_commit_info['message']}".replace('\n', ''), 'light_blue')
-            if self.rees.binder_image_name_override:
-                log_and_print(f'     └───────── ℹ Using NeuroLibre base image {self.rees.binder_image_name_override}', 'yellow')
-            else:    
-                log_and_print(f'     └───────── ℹ This image was built from REES-compliant {self.rees.gh_user_repo_name} repository at the commit above', 'yellow')
         except Exception as e:
-            logging.error(f'Could not spawn a JH: \n {e}')
-            output_logs.append(f'Error: {e}')
-            self.cleanup()
-            raise
+            raise ContainerError(f"Failed to spawn container: {e}") from e
+
+    def _log_spawn_status(self) -> List[str]:
+        """
+        Log spawn status information.
+
+        Returns:
+            List of log messages
+        """
+        output_logs = []
+
+        def log(message: str, color: Optional[str] = None):
+            """Helper to log and collect messages."""
+            output_logs.append(f"\n {message}")
+            if color:
+                self.cprint(message, color)
+            else:
+                print(message)
+
+        # Status section
+        log('␤[Status]', 'light_grey')
+        log(' ├─────── ⏺ running', 'green')
+        log(f' └─────── Container {self.container.short_id} {self.container.name}', 'green')
+
+        # Debug info
+        log(' ℹ Run the following commands in the terminal if you are debugging locally:', 'yellow')
+        log(f' port="{self.port}"', 'cyan')
+        log(f' export JUPYTER_BASE_URL="{self.jh_url}"', 'cyan')
+        log(f' export JUPYTER_TOKEN="{self.jh_token}"', 'cyan')
+
+        # Resources section
+        log('␤[Resources]', 'light_grey')
+        log(' ├── MyST repository', 'magenta')
+        log(f' │   ├───────── ✸ {self.rees.gh_user_repo_name}', 'light_blue')
+        log(f' │   ├───────── ⎌ {self.rees.gh_repo_commit_hash}', 'light_blue')
+
+        repo_info = self.rees.repo_commit_info
+        if repo_info:
+            log(
+                f" │   └───────── ⏲ {repo_info['datetime']}: {repo_info['message']}".replace('\n', ''),
+                'light_blue'
+            )
+
+        log(' └── Docker container', 'magenta')
+        log(f'     ├───────── ✸ {self.rees.pull_image_name}', 'light_blue')
+        log(f'     ├───────── ⎌ {self.rees.binder_image_tag}', 'light_blue')
+
+        binder_info = self.rees.binder_commit_info
+        if binder_info:
+            log(
+                f"     ├───────── ⏲ {binder_info['datetime']}: {binder_info['message']}".replace('\n', ''),
+                'light_blue'
+            )
+
+        if self.rees.binder_image_name_override:
+            log(
+                f'     └───────── ℹ Using NeuroLibre base image {self.rees.binder_image_name_override}',
+                'yellow'
+            )
+        else:
+            log(
+                f'     └───────── ℹ This image was built from REES-compliant '
+                f'{self.rees.gh_user_repo_name} repository at the commit above',
+                'yellow'
+            )
 
         return output_logs
 
     def delete_stopped_containers(self):
-        """
-        Delete all stopped Docker containers.
-        """
-        stopped_containers = self.rees.docker_client.containers.list(all=True, filters={"status": "exited"})
+        """Delete all stopped Docker containers."""
+        stopped_containers = self.rees.docker_client.containers.list(
+            all=True,
+            filters={"status": "exited"}
+        )
+
         for container in stopped_containers:
             logging.info(f"Deleting stopped container: {container.id}")
             container.remove()
 
     def delete_image(self):
-        """
-        Delete the pulled Docker image.
-        """
-        if self.docker_image:
-            logging.info(f"Deleting image: {self.docker_image.id}")
-            self.rees.docker_client.images.remove(image=self.docker_image.id)
+        """Delete the pulled Docker image."""
+        if self.rees.docker_image:
+            logging.info(f"Deleting image: {self.rees.docker_image.id}")
+            self.rees.docker_client.images.remove(image=self.rees.docker_image.id)
 
     def stop_container(self):
-        self.logger.warning("Attempting to stop and remove the running container.")
+        """Stop and remove the running container."""
+        self.logger.warning("Attempting to stop and remove the running container")
         self.cleanup()
 
-    def is_running(self):
+    def is_running(self) -> bool:
         """
         Check if the container is currently running.
-        
+
         Returns:
-            bool: True if container exists and is running, False otherwise.
+            True if container exists and is running, False otherwise
         """
         if not self.container:
             return False
-        
+
         try:
             self.container.reload()
             return self.container.status == 'running'
@@ -231,19 +431,19 @@ class JupyterHubLocalSpawner(AbstractClass):
             self.logger.error(f"Error checking container status: {e}")
             return False
 
-    def get_container_logs(self, tail=100):
+    def get_container_logs(self, tail: int = 100) -> str:
         """
         Get logs from the running container.
-        
+
         Args:
-            tail (int): Number of lines to tail from the logs.
-            
+            tail: Number of lines to tail from the logs
+
         Returns:
-            str: Container logs or empty string if container not available.
+            Container logs or empty string if container not available
         """
         if not self.container:
             return ""
-        
+
         try:
             return self.container.logs(tail=tail).decode('utf-8')
         except Exception as e:
