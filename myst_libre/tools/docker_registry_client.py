@@ -196,9 +196,20 @@ class DockerRegistryClient(AbstractClass):
             if repo:
                 return repo
 
-        # Fallback to github.repo
+        # Fallback to github field (can be string or dict)
         if 'github' in project:
-            repo_url = project['github'].get('repo', '').rstrip('/')
+            github = project['github']
+
+            # Handle both string and dict formats
+            if isinstance(github, str):
+                # github is directly the repo URL
+                repo_url = github.rstrip('/')
+            elif isinstance(github, dict):
+                # github is a dict with 'repo' key
+                repo_url = github.get('repo', '').rstrip('/')
+            else:
+                return None
+
             if repo_url:
                 # Extract user/repo from URL
                 parts = repo_url.split('/')
