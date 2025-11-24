@@ -1,6 +1,8 @@
-from myst_libre.tools import JupyterHubLocalSpawner
+from myst_libre.tools import JupyterHubLocalSpawner, MystMD
 from myst_libre.rees import REES
-from myst_libre.builders import CurvenoteBuilder
+from myst_libre.builders import MystBuilder
+
+
 
 rees = REES(dict(
     registry_url="https://binder-registry.conp.cloud",
@@ -17,12 +19,10 @@ hub = JupyterHubLocalSpawner(rees,
                         host_data_parent_dir = "/Users/agah/Desktop/tmp/DATA",
                         container_data_mount_dir = '/home/jovyan/data')
 
+# # This has to be called
 hub_logs = hub.spawn_jupyter_hub()
 
-builder = CurvenoteBuilder(hub=hub)
+builder = MystBuilder(hub=hub)
+myst_logs = builder.build('--execute','--html')
 
-build_logs = builder.build('--execute','--html')
-print(build_logs)
-
-submit_logs = builder.submit_draft('neurolibre', '--draft', '-y', '--skip-rebuild')
-print(submit_logs)
+print(myst_logs)
