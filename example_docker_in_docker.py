@@ -178,7 +178,13 @@ def main():
         # host_path_prefix: The actual host path that corresponds to /workspace
         # container_path_prefix: The container path to translate from
         host_path_prefix=host_workspace_path,
-        container_path_prefix="/workspace"
+        container_path_prefix="/workspace",
+
+        # Enable Docker-in-Docker networking fix:
+        # When True, uses the spawned Jupyter container's name instead of localhost.
+        # This is REQUIRED for proper networking when myst-libre runs inside a container
+        # and needs to execute notebooks (--execute flag) in sibling Jupyter containers.
+        enable_dind=True
     )
 
     print("✓ JupyterHub spawner configured")
@@ -206,17 +212,27 @@ def main():
 
     print("\nBuilding MyST project...")
     builder = MystBuilder(hub=hub)
-    myst_logs = builder.build('--execute', '--html')
 
+    myst_logs = builder.build('--execute', '--html', '--keep-host','debug')
+
+    print("\n" + "="*70)
+    print("BUILD OUTPUT")
+    print("="*70)
     print(myst_logs)
-    print("✓ Build completed successfully")
+    print("="*70)
+
+    print("\n✓ Build completed successfully")
 
     # ========================================================================
     # Cleanup
     # ========================================================================
-    # The JupyterHubLocalSpawner context manager ensures cleanup
-    # Uncomment if not using context manager:
-    # hub.cleanup()
+    # CRITICAL: Stop the Jupyter container and clean up resources
+    print("\n 🧹 Cleaning up Jupyter container...")
+    try:
+        hub.cleanup()
+        print("✅ Jupyter container terminated")
+    except Exception as e:
+        print(f"⚠️ Warning during cleanup: {e}")
 
 
 if __name__ == '__main__':

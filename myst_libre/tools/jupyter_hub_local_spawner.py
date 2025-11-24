@@ -58,6 +58,10 @@ class JupyterHubLocalSpawner(AbstractClass):
               Example: if container has /workspace → /home/user/workspace mounted,
               set host_path_prefix="/home/user/workspace" and container_path_prefix="/workspace"
             - container_path_prefix: Container path prefix to replace. Default: "/"
+            - enable_dind: Enable Docker-in-Docker networking fix. When True, uses the
+              spawned container's name instead of localhost for Jupyter connections.
+              Required for proper networking when myst-libre runs inside a container
+              and spawns sibling Jupyter containers. Default: False
 
         Raises:
             TypeError: If rees is not a REES instance
@@ -104,9 +108,10 @@ class JupyterHubLocalSpawner(AbstractClass):
                 raise ValueError(f"Required parameter '{inp}' not provided for JupyterHubLocalSpawner")
             setattr(self, inp, kwargs[inp])
 
-        # Docker-in-Docker support: path translation
+        # Docker-in-Docker support: path translation and networking
         self.host_path_prefix: Optional[str] = kwargs.get('host_path_prefix')
         self.container_path_prefix: str = kwargs.get('container_path_prefix', '/')
+        self.enable_dind: bool = kwargs.get('enable_dind', False)
 
         # Create ContainerConfig for structured access
         self.container_config = ContainerConfig(
@@ -226,6 +231,9 @@ class JupyterHubLocalSpawner(AbstractClass):
             # Allocate port and generate token
             self.port = self.find_open_port()
             self.jh_token = self._generate_token()
+
+            # Set initial jh_url (may be updated after container spawn for DIND mode)
+            # Use localhost for non-DIND mode (default), which works for local execution
             self.jh_url = f"http://localhost:{self.port}"
 
             # Determine entrypoint
@@ -250,11 +258,31 @@ class JupyterHubLocalSpawner(AbstractClass):
             # Spawn container
             self._spawn_container(entrypoint, volumes)
 
+            # For Docker-in-Docker mode: update jh_url to use container IP for proper networking
+            # When myst-libre runs inside a container and spawns sibling Jupyter containers,
+            # using localhost from the myst container doesn't reach the sibling.
+            # Instead, use the container's IP address on the Docker network.
+            if self.enable_dind:
+                # Reload container state to get updated network settings
+                self.container.reload()
+                # Get the container's IP address on the default bridge network
+                container_ip = self.container.attrs['NetworkSettings']['IPAddress']
+                if not container_ip:
+                    raise ContainerError(
+                        f"Failed to get IP address for container {self.container.short_id}. "
+                        f"Container may not be properly connected to Docker network."
+                    )
+                self.jh_url = f"http://{container_ip}:{self.port}"
+                self.logger.info(f"🐳❤️🐳 Docker-in-Docker mode (DinD): Using Jupyter URL: {self.jh_url}")
+
+                # Wait for Jupyter server to be ready
+                self._wait_for_jupyter_ready(container_ip)
+
             # Log status information
             output_logs.extend(self._log_spawn_status())
 
         except (docker.errors.APIError, docker.errors.DockerException, OSError, ValueError, AttributeError) as e:
-            logging.error(f"Could not spawn JupyterHub: {e}")
+            self.logger.error(f"Could not spawn JupyterHub: {e}")
             output_logs.append(f"Error: {e}")
             self.cleanup()
             raise ContainerError(f"Failed to spawn JupyterHub: {e}") from e
@@ -515,3 +543,42 @@ class JupyterHubLocalSpawner(AbstractClass):
         except Exception as e:
             self.logger.error(f"Error getting container logs: {e}")
             return f"Error retrieving logs: {e}"
+
+    def _wait_for_jupyter_ready(self, container_ip: str, timeout: int = 30) -> None:
+        """
+        Wait for Jupyter server to be ready for connections.
+
+        Args:
+            container_ip: IP address of the Jupyter container
+            timeout: Maximum seconds to wait for server to be ready
+
+        Raises:
+            ContainerError: If server doesn't become ready within timeout
+        """
+        import time
+        import urllib.request
+        import urllib.error
+
+        jupyter_url = f"http://{container_ip}:{self.port}"
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                # Create request with authentication token
+                req = urllib.request.Request(
+                    f"{jupyter_url}/api/status",
+                    headers={"Authorization": f"token {self.jh_token}"}
+                )
+                response = urllib.request.urlopen(req, timeout=2)
+                if response.status == 200:
+                    self.logger.info(f"🕸️🐳✅ Jupyter server at {jupyter_url} is ready")
+                    return
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+                # Server not ready yet, wait and retry
+                self.logger.info(f"Jupyter not ready yet: {e}")
+                time.sleep(1)
+                continue
+
+        raise ContainerError(
+            f"Jupyter server at {jupyter_url} did not become ready within {timeout} seconds"
+        )

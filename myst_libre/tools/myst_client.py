@@ -137,6 +137,14 @@ class MystMD(AbstractClass):
             self.logger.debug(f"Set cwd to: {self.build_dir}")
             self.logger.debug(f"Command: {' '.join(command)}")
 
+            # Log the Jupyter environment variables being used
+            if 'JUPYTER_BASE_URL' in env:
+                self.logger.info(f"JUPYTER_BASE_URL: {env['JUPYTER_BASE_URL']}")
+            if 'JUPYTER_TOKEN' in env:
+                self.logger.info(f"JUPYTER_TOKEN: {env['JUPYTER_TOKEN']}")
+            if 'port' in env:
+                self.logger.info(f"port: {env['port']}")
+
             # Build subprocess arguments
             popen_kwargs = {
                 'env': env,
