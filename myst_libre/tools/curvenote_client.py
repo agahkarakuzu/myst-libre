@@ -398,6 +398,31 @@ class Curvenote(Authenticator):
         )
         return self._combine_logs(stdout_log, stderr_log)
 
+    def submit_draft(
+        self,
+        *args: str,
+        user: Optional[str] = None,
+        group: Optional[str] = None
+    ) -> str:
+        """
+        Submit a draft to Curvenote with specified arguments.
+
+        Args:
+            *args: Variable length argument list for the curvenote submit command
+            user: Optional username to run command as
+            group: Optional group to run command as
+
+        Returns:
+            Combined stdout and stderr output
+        """
+        stdout_log, stderr_log = self.run_command(
+            'submit', *args,
+            env_vars=self.env_vars,
+            user=user,
+            group=group
+        )
+        return self._combine_logs(stdout_log, stderr_log)
+
 
 # Backward compatibility aliases
 check_node_installed = Curvenote._check_node_installed

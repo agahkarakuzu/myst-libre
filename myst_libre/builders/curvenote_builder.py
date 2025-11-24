@@ -278,3 +278,28 @@ class CurvenoteBuilder(AbstractClass):
 
         logs = self.curvenote_client.pull(path, user=user, group=group)
         return logs
+
+    def submit_draft(
+        self,
+        *args: str,
+        user: Optional[str] = None,
+        group: Optional[str] = None
+    ) -> str:
+        """
+        Submit a draft to Curvenote.
+
+        Args:
+            *args: Arguments to pass to curvenote submit command
+            user: Optional username to run as
+            group: Optional group to run as
+
+        Returns:
+            Submit output logs
+        """
+        if self.hub is not None:
+            self.cprint(f'Submitting draft to Curvenote {self.hub.jh_url}', 'yellow')
+        else:
+            self.cprint('Submitting draft to Curvenote (no execution)', 'yellow')
+
+        logs = self.curvenote_client.submit_draft(*args, user=user, group=group)
+        return logs

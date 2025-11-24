@@ -115,12 +115,19 @@ class ContainerConfig:
         host_data_parent_dir: Parent directory on host for data
         container_data_mount_dir: Mount point in container for data
         port_range: Tuple of (min_port, max_port) for port allocation
+        host_path_prefix: (Optional) Host path prefix for Docker-in-Docker scenarios.
+            When myst-libre runs in a container and spawns sibling containers,
+            this translates container paths to host paths for volume mounts.
+        container_path_prefix: (Optional) Container path prefix to replace.
+            Default: "/" (root of container filesystem)
     """
     host_build_source_parent_dir: Path
     container_build_source_mount_dir: str
     host_data_parent_dir: Path
     container_data_mount_dir: str
     port_range: Tuple[int, int] = DEFAULT_PORT_RANGE
+    host_path_prefix: Optional[str] = None
+    container_path_prefix: str = "/"
 
     def __post_init__(self):
         """Convert string paths to Path objects."""

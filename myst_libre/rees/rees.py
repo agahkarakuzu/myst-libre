@@ -72,9 +72,13 @@ class REES(AbstractClass):
         """
         Check if Docker is installed and available.
 
+        First tries docker CLI. If that fails (e.g., in containers without CLI),
+        verifies the Docker daemon is accessible via the Python Docker library.
+
         Raises:
-            EnvironmentError: If Docker is not installed
+            EnvironmentError: If Docker daemon is not accessible
         """
+        cli_available = False
         try:
             result = subprocess.run(
                 ['docker', '--version'],
@@ -84,10 +88,20 @@ class REES(AbstractClass):
                 check=True
             )
             self.print_success(f"Docker is installed: {result.stdout.strip()}")
-        except subprocess.CalledProcessError as e:
-            raise EnvironmentError(
-                "Docker is not installed or not found in PATH. Please install Docker to proceed."
-            ) from e
+            cli_available = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Docker CLI not available (common in containers)
+            # Try to verify daemon access via Python library
+            try:
+                import docker
+                client = docker.from_env()
+                client.ping()  # Test connection
+                self.print_success("Docker daemon is accessible (via Python library)")
+            except Exception as daemon_error:
+                raise EnvironmentError(
+                    "Docker daemon is not accessible. Ensure /var/run/docker.sock is mounted "
+                    "in Docker-in-Docker scenarios."
+                ) from daemon_error
 
     @retry_github_api
     def _resolve_commit_hash(self):

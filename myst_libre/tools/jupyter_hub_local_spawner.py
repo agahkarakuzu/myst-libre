@@ -16,6 +16,7 @@ import docker.errors
 from ..abstract_class import AbstractClass
 from ..models import ContainerConfig
 from ..exceptions import ContainerError, PortAllocationError
+from .path_utils import translate_container_path_to_host, should_translate_paths
 
 # Use TYPE_CHECKING to avoid circular import
 if TYPE_CHECKING:
@@ -49,6 +50,14 @@ class JupyterHubLocalSpawner(AbstractClass):
             - container_build_source_mount_dir: Mount point in container for build sources
             - host_data_parent_dir: Parent directory on host for data
             - host_build_source_parent_dir: Parent directory on host for build sources
+
+        Optional kwargs (for Docker-in-Docker scenarios):
+            - host_path_prefix: Host path prefix for path translation. When myst-libre
+              runs in a container and needs to spawn sibling containers, this should be
+              set to the host path corresponding to the container_path_prefix.
+              Example: if container has /workspace → /home/user/workspace mounted,
+              set host_path_prefix="/home/user/workspace" and container_path_prefix="/workspace"
+            - container_path_prefix: Container path prefix to replace. Default: "/"
 
         Raises:
             TypeError: If rees is not a REES instance
@@ -95,13 +104,19 @@ class JupyterHubLocalSpawner(AbstractClass):
                 raise ValueError(f"Required parameter '{inp}' not provided for JupyterHubLocalSpawner")
             setattr(self, inp, kwargs[inp])
 
+        # Docker-in-Docker support: path translation
+        self.host_path_prefix: Optional[str] = kwargs.get('host_path_prefix')
+        self.container_path_prefix: str = kwargs.get('container_path_prefix', '/')
+
         # Create ContainerConfig for structured access
         self.container_config = ContainerConfig(
             host_build_source_parent_dir=self.host_build_source_parent_dir,
             container_build_source_mount_dir=self.container_build_source_mount_dir,
             host_data_parent_dir=self.host_data_parent_dir,
             container_data_mount_dir=self.container_data_mount_dir,
-            port_range=kwargs.get('port_range', DEFAULT_PORT_RANGE)
+            port_range=kwargs.get('port_range', DEFAULT_PORT_RANGE),
+            host_path_prefix=self.host_path_prefix,
+            container_path_prefix=self.container_path_prefix
         )
 
     def find_open_port(self) -> int:
@@ -294,11 +309,27 @@ class JupyterHubLocalSpawner(AbstractClass):
         """
         Build volume mount configuration.
 
+        When running in Docker-in-Docker mode (host_path_prefix is set), translates
+        container paths to host paths for volume mounts. This is necessary because
+        the Docker daemon always interprets volume mount paths relative to the host,
+        not the myst-libre container.
+
         Returns:
             Dictionary of volume mounts
         """
+        # Translate build directory path if needed
+        build_dir_host_path = str(self.rees.build_dir)
+        if should_translate_paths(self.host_path_prefix):
+            build_dir_host_path = str(
+                translate_container_path_to_host(
+                    self.rees.build_dir,
+                    self.host_path_prefix,
+                    self.container_path_prefix
+                )
+            )
+
         volumes = {
-            str(self.rees.build_dir): {
+            build_dir_host_path: {
                 'bind': self.container_build_source_mount_dir,
                 'mode': 'rw'
             }
@@ -307,6 +338,15 @@ class JupyterHubLocalSpawner(AbstractClass):
         # Add data volume if dataset exists
         if self.rees.dataset_name:
             host_data_path = Path(self.host_data_parent_dir) / self.rees.dataset_name
+
+            # Translate data directory path if needed
+            if should_translate_paths(self.host_path_prefix):
+                host_data_path = translate_container_path_to_host(
+                    host_data_path,
+                    self.host_path_prefix,
+                    self.container_path_prefix
+                )
+
             container_data_path = f"{self.container_data_mount_dir}/{self.rees.dataset_name}"
 
             volumes[str(host_data_path)] = {
